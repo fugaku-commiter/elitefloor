@@ -546,7 +546,7 @@ class DashboardView(discord.ui.View):
         embed.description = "\n".join(lines)
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-    @discord.ui.button(label="Experimental", style=discord.ButtonStyle.danger, custom_id="experimental")
+    @discord.ui.button(label="Verify(BETA)", style=discord.ButtonStyle.danger, custom_id="experimental")
     async def experimental_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         user_id = str(interaction.user.id)
