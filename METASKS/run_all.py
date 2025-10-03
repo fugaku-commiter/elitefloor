@@ -47,10 +47,10 @@ async def main() -> None:
         zsteady_cwd = repo_root
 
     # Processes to launch: METASKS.bot and zsteady.py (kept independent)
-    tasks = [
-        asyncio.create_task(_run_process("METASKS", [python, "-m", "METASKS.bot"], cwd=repo_root)),
-        asyncio.create_task(_run_process("ZSTEADY", zsteady_cmd, cwd=zsteady_cwd)),
-    ]
+    print("[LAUNCH] Starting METASKS.bot and zsteady...")
+    task_metasks = asyncio.create_task(_run_process("METASKS", [python, "-m", "METASKS.bot"], cwd=repo_root))
+    task_zsteady = asyncio.create_task(_run_process("ZSTEADY", zsteady_cmd, cwd=zsteady_cwd))
+    tasks = [task_metasks, task_zsteady]
 
     # Graceful shutdown on Ctrl+C
     loop = asyncio.get_running_loop()
@@ -66,12 +66,19 @@ async def main() -> None:
             # Windows without Proactor might not support add_signal_handler
             pass
 
-    await stop.wait()
-    # Cancel tasks (subprocesses will end when parent exits)
-    for t in tasks:
-        t.cancel()
+    # Exit early if any child terminates (crash or normal)
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for d in done:
         try:
-            await t
+            code = d.result()
+        except Exception as exc:
+            print(f"[LAUNCH] Child task crashed: {exc}")
+            code = -1
+        print(f"[LAUNCH] A child process exited with code {code}. Shutting down.")
+    for p in pending:
+        p.cancel()
+        try:
+            await p
         except asyncio.CancelledError:
             pass
 
