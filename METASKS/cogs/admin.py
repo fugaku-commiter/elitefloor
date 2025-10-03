@@ -570,7 +570,7 @@ class DashboardView(discord.ui.View):
         desc = "\n".join(lines)
         if evm_addr:
             desc += f"\n\nEVM: `{evm_addr}`"
-        embed = discord.Embed(title="Experimental Verification", description=desc or "No wallets.", color=discord.Color.red())
+        embed = discord.Embed(title="Verification(BETA)", description=desc or "No wallets.", color=discord.Color.red())
         await interaction.followup.send(embed=embed, view=ExperimentalVerifyView(self.db, wallets), ephemeral=True)
 
 
