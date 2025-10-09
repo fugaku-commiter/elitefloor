@@ -546,7 +546,7 @@ class DashboardView(discord.ui.View):
         embed.description = "\n".join(lines)
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-    @discord.ui.button(label="Verify(BETA)", style=discord.ButtonStyle.danger, custom_id="experimental")
+    @discord.ui.button(label="Experimental", style=discord.ButtonStyle.danger, custom_id="experimental")
     async def experimental_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         user_id = str(interaction.user.id)
@@ -570,7 +570,7 @@ class DashboardView(discord.ui.View):
         desc = "\n".join(lines)
         if evm_addr:
             desc += f"\n\nEVM: `{evm_addr}`"
-        embed = discord.Embed(title="Verification(BETA)", description=desc or "No wallets.", color=discord.Color.red())
+        embed = discord.Embed(title="Experimental Verification", description=desc or "No wallets.", color=discord.Color.red())
         await interaction.followup.send(embed=embed, view=ExperimentalVerifyView(self.db, wallets), ephemeral=True)
 
 
@@ -1169,6 +1169,7 @@ class HistoricalRewardsView(discord.ui.View):
 
     async def _compute_lines(self) -> list[str]:
         lines: list[str] = []
+        cumulative_total = 0.0
         for epoch, label in self._month_labels():
             doc = await self.db.hist_rewards.find_one({"_id": epoch})
             rewards_map: dict[str, float] = (doc or {}).get("rewards", {})
@@ -1180,6 +1181,9 @@ class HistoricalRewardsView(discord.ui.View):
                     continue
             value = f"${total:,.2f}" if total > 0 else "N/A"
             lines.append(f"{label} {self.years[self.page]}: {value}")
+            cumulative_total += total
+        # Add cumulative year-to-date total at the bottom
+        lines.append(f"\nCumulative YTD:  ${cumulative_total:,.2f}")
         return lines
 
     def render_embed(self) -> discord.Embed:
