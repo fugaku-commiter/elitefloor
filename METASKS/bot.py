@@ -154,18 +154,30 @@ class METASKSBot(commands.Bot):
                 # Auto-send panel: clear target channel then post panel
                 panel_channel = await self._resolve_text_channel(self._panel_channel_id)
                 if panel_channel is not None:
+                    # Clear messages best-effort; do not abort on failure
+                    await self._clear_channel_messages(panel_channel)
+                    # Send panel; report errors to status channel
                     try:
-                        await self._clear_channel_messages(panel_channel)
                         from .cogs.admin import PanelView  # local import
-                        view = PanelView(self.db)  # persistent view already registered, this instance attaches
+                        view = PanelView(self.db)  # persistent view already registered
                         embed = discord.Embed(
                             title="Elite Floor Panel",
                             description="Click 'Dashboard' for your stats, wallets, and tasks.",
                             color=discord.Color.green(),
                         )
                         await panel_channel.send(embed=embed, view=view)
+                        if status_channel is not None:
+                            try:
+                                await status_channel.send(embed=success_embed("Autosnapshot", "Panel posted."))
+                            except Exception:
+                                pass
                     except Exception as exc:  # noqa: BLE001
                         logging.exception("Auto panel post failed: %s", exc)
+                        if status_channel is not None:
+                            try:
+                                await status_channel.send(embed=error_embed("Autosnapshot", f"Panel post failed: {exc}"))
+                            except Exception:
+                                pass
             except Exception as exc:  # noqa: BLE001
                 logging.exception("Auto snapshot loop error: %s", exc)
             # Sleep 24 hours
