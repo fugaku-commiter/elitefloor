@@ -232,6 +232,13 @@ class SnapshotService:
         total = len(wallets)
         progress = 0
 
+        # Clear previous snapshot results so stale data isn't shown
+        try:
+            await self._db.zstats.delete_many({})
+        except Exception as exc:  # noqa: BLE001
+            # Record the error but continue; snapshot will repopulate
+            print(f"[snapshot] Failed to clear zstats: {exc}")
+
         # Mark job as started
         await self._db.jobs.update_one(
             {"_id": job_id},
