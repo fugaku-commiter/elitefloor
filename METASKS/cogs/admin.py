@@ -896,8 +896,12 @@ class ConfirmSnapshotModal(discord.ui.Modal):
         if self.confirm.value.strip().upper() != "CONFIRM":
             await interaction.response.send_message("Cancelled.", ephemeral=True)
             return
-        # Post a public progress message in the channel
-        progress_embed = progress_embed_func("Snapshot Running", 0, 0, "Starting...")
+        # Announce snapshot starting (separate message from the live progress embed)
+        starting_msg = await interaction.channel.send(  # type: ignore[arg-type]
+            embed=info_embed("Snapshot Starting", "Clearing previous snapshot data and preparing...")
+        )
+        # Post a public progress message in the channel (separate from the starting notice)
+        progress_embed = progress_embed_func("Snapshot Running", 0, 0, "Processing wallets...")
         msg = await interaction.channel.send(embed=progress_embed)  # type: ignore[arg-type]
         await interaction.response.send_message("Snapshot started.", ephemeral=True)
 
