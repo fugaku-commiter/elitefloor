@@ -10,7 +10,7 @@ from discord.ext import commands
 
 from .config import load_config
 from .db import Database
-from .cogs.admin import PanelView  # for auto panel posting
+from .utils.embeds import info_embed, progress_embed, success_embed, error_embed
 
 
 logging.basicConfig(level=logging.INFO)
@@ -35,6 +35,12 @@ class METASKSBot(commands.Bot):
         await self.load_extension("METASKS.cogs.admin")
         await self.load_extension("METASKS.cogs.user")
         await self.load_extension("METASKS.cogs.public")
+        # Register persistent views so panel buttons work after restarts
+        try:
+            from .cogs.admin import PanelView  # local import to avoid circulars at module import time
+            self.add_view(PanelView(self.db))
+        except Exception:
+            pass
 
     async def on_ready(self) -> None:
         logging.info("Logged in as %s (%s)", self.user, self.user.id if self.user else "?")
@@ -79,7 +85,7 @@ class METASKSBot(commands.Bot):
                 status_channel = await self._resolve_text_channel(self._auto_status_channel_id)
                 if status_channel is not None:
                     try:
-                        await status_channel.send("Initiating auto snapshot")
+                        await status_channel.send(embed=info_embed("Autosnapshot", "Initiating auto snapshot"))
                     except Exception:
                         pass
 
@@ -92,7 +98,7 @@ class METASKSBot(commands.Bot):
                     # Announce and fetch holders
                     if status_channel is not None:
                         try:
-                            await status_channel.send("Fetching holders...")
+                            await status_channel.send(embed=info_embed("Autosnapshot", "Fetching holders..."))
                         except Exception:
                             pass
                     try:
@@ -102,7 +108,7 @@ class METASKSBot(commands.Bot):
                             await self.db.holders.update_one({"_id": w}, {"$set": {"_id": w}}, upsert=True)
                         if status_channel is not None:
                             try:
-                                await status_channel.send(f"Fetched {len(holders)} holders.")
+                                await status_channel.send(embed=success_embed("Autosnapshot", f"Fetched {len(holders)} holders."))
                             except Exception:
                                 pass
                     except Exception as exc:  # noqa: BLE001
@@ -112,7 +118,7 @@ class METASKSBot(commands.Bot):
                     progress_msg = None
                     if status_channel is not None:
                         try:
-                            progress_msg = await status_channel.send("Starting snapshot...")
+                            progress_msg = await status_channel.send(embed=info_embed("Autosnapshot", "Starting snapshot..."))
                         except Exception:
                             progress_msg = None
                     import uuid, time
@@ -121,7 +127,7 @@ class METASKSBot(commands.Bot):
                     async def updater(done: int, total: int):
                         try:
                             if progress_msg is not None:
-                                await progress_msg.edit(content=f"Snapshot progress: {done}/{total}")
+                                await progress_msg.edit(embed=progress_embed("Autosnapshot Progress", done, total, "Running snapshot..."))
                         except Exception:
                             pass
 
@@ -129,7 +135,7 @@ class METASKSBot(commands.Bot):
                         await admin_cog.snapshot_service.run_snapshot_from_db(job_id, progress_cb=updater)
                         if status_channel is not None:
                             try:
-                                await status_channel.send("Snapshot completed.")
+                                await status_channel.send(embed=success_embed("Autosnapshot", "Snapshot completed."))
                             except Exception:
                                 pass
                         # Update bunker roles and notify (runs inline here; it rate-limits messages)
@@ -141,7 +147,7 @@ class METASKSBot(commands.Bot):
                         logging.exception("Auto snapshot failed: %s", exc)
                         if status_channel is not None:
                             try:
-                                await status_channel.send(f"Snapshot failed: {exc}")
+                                await status_channel.send(embed=error_embed("Autosnapshot", f"Snapshot failed: {exc}"))
                             except Exception:
                                 pass
 
@@ -150,8 +156,8 @@ class METASKSBot(commands.Bot):
                 if panel_channel is not None:
                     try:
                         await self._clear_channel_messages(panel_channel)
-                        from .cogs.admin import AdminView  # to keep import local if needed
-                        view = PanelView(self.db)
+                        from .cogs.admin import PanelView  # local import
+                        view = PanelView(self.db)  # persistent view already registered, this instance attaches
                         embed = discord.Embed(
                             title="Elite Floor Panel",
                             description="Click 'Dashboard' for your stats, wallets, and tasks.",
