@@ -23,6 +23,10 @@ from ..utils.solana import is_valid_solana_address
 from ..config import load_config
 
 
+# Bunker role and announcement channel
+BUNKER_ROLE_ID = 1388758214765711400
+BUNKER_CHANNEL_ID = 1388758144448200836
+
 def is_admin():
     def predicate(interaction: discord.Interaction) -> bool:
         cfg = load_config()
@@ -53,6 +57,123 @@ class AdminCog(commands.Cog):
         self.db = db
         self.cfg = load_config()
         self.snapshot_service = SnapshotService(db)
+
+    async def _compute_user_totals(self) -> list[tuple[int, float]]:
+        results: list[tuple[int, float]] = []
+        cursor = self.db.users.find({}, {"_id": 1, "wallets": 1})
+        async for u in cursor:
+            uid_str = str(u.get("_id", "")).strip()
+            if not uid_str:
+                continue
+            try:
+                uid = int(uid_str)
+            except Exception:
+                continue
+            wallets: list[str] = u.get("wallets", []) or []
+            total = 0.0
+            if wallets:
+                zc = self.db.zstats.find({"_id": {"$in": wallets}}, {"_id": 1, "total_allocation": 1})
+                async for z in zc:
+                    try:
+                        total += float(z.get("total_allocation", 0.0))
+                    except Exception:
+                        continue
+            results.append((uid, total))
+        # Sort descending by total allocation
+        results.sort(key=lambda x: -x[1])
+        return results
+
+    async def update_bunker_roles_and_notify(self) -> None:
+        # Resolve channel and guild
+        channel = self.bot.get_channel(BUNKER_CHANNEL_ID)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(BUNKER_CHANNEL_ID)  # type: ignore[assignment]
+            except Exception:
+                channel = None  # type: ignore[assignment]
+        if channel is None or not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            return
+        guild = channel.guild
+        role = guild.get_role(BUNKER_ROLE_ID)
+        if role is None:
+            return
+
+        # Compute totals and threshold (rank 100 amount)
+        totals = await self._compute_user_totals()
+        if not totals:
+            # No data -> remove role from all current holders
+            to_remove_members = list(role.members)
+            for m in to_remove_members:
+                try:
+                    await m.remove_roles(role, reason="Snapshot cleared; no eligible users")
+                except Exception:
+                    pass
+            return
+        threshold_index = min(99, len(totals) - 1)
+        threshold = totals[threshold_index][1]
+
+        eligible_ids: set[int] = {uid for uid, total in totals if total >= threshold}
+        current_ids: set[int] = {m.id for m in role.members}
+        to_add_ids = eligible_ids - current_ids
+        to_remove_ids = current_ids - eligible_ids
+
+        notifications: list[tuple[discord.Member, bool]] = []  # (member, entering)
+
+        # Apply additions
+        for uid in to_add_ids:
+            member = guild.get_member(uid)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(uid)  # type: ignore[assignment]
+                except Exception:
+                    member = None  # type: ignore[assignment]
+            if member is None:
+                continue
+            try:
+                await member.add_roles(role, reason="Top allocation threshold met")
+                notifications.append((member, True))
+            except discord.Forbidden:
+                continue
+            except Exception:
+                continue
+
+        # Apply removals
+        for uid in to_remove_ids:
+            member = guild.get_member(uid)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(uid)  # type: ignore[assignment]
+                except Exception:
+                    member = None  # type: ignore[assignment]
+            if member is None:
+                continue
+            try:
+                await member.remove_roles(role, reason="Dropped below allocation threshold")
+                notifications.append((member, False))
+            except discord.Forbidden:
+                continue
+            except Exception:
+                continue
+
+        # Send notifications at most one per minute
+        for idx, (member, entering) in enumerate(notifications):
+            try:
+                title = "Bunker Alert"
+                if entering:
+                    desc = f"{member.display_name} has entered the bunker."
+                else:
+                    desc = f"{member.display_name} has left the bunker."
+                embed = discord.Embed(title=title, description=desc, color=discord.Color.gold())
+                try:
+                    embed.set_image(url=member.display_avatar.url)
+                except Exception:
+                    pass
+                await channel.send(content=f"<@{member.id}>", embed=embed)
+            except Exception:
+                pass
+            # Rate limit: one message per minute
+            if idx < len(notifications) - 1:
+                await asyncio.sleep(60)
 
     @staticmethod
     def _normalize_csv_url(url: str) -> str:
@@ -787,6 +908,38 @@ class PanelView(discord.ui.View):
         allocation_percent = (total_allocation / 6_000_000) * 100 if total_allocation > 0 else 0
         embed = discord.Embed(title="Your Dashboard", description="Here’s an overview of your stats:", color=discord.Color.green())
         embed.add_field(name="Total Allocation", value=f"{allocation_dollars} / {allocation_percent:.2f}%", inline=False)
+        # Compute combined rank among all users by total allocation (show any rank)
+        rank_text = "Unranked"
+        try:
+            totals: list[tuple[int, float]] = []
+            cursor_users = self.db.users.find({}, {"_id": 1, "wallets": 1})
+            async for u in cursor_users:
+                uid_str = str(u.get("_id", "")).strip()
+                if not uid_str:
+                    continue
+                try:
+                    uid_int = int(uid_str)
+                except Exception:
+                    continue
+                wallets: list[str] = u.get("wallets", []) or []
+                t = 0.0
+                if wallets:
+                    zc = self.db.zstats.find({"_id": {"$in": wallets}}, {"_id": 1, "total_allocation": 1})
+                    async for z in zc:
+                        try:
+                            t += float(z.get("total_allocation", 0.0))
+                        except Exception:
+                            continue
+                totals.append((uid_int, t))
+            totals.sort(key=lambda x: -x[1])
+            # find rank (1-based)
+            uid_me = int(user_id)
+            pos = next((idx + 1 for idx, (uid, _t) in enumerate(totals) if uid == uid_me), None)
+            if pos is not None:
+                rank_text = f"**Rank {pos}**" if pos <= 100 else f"Rank {pos}"
+        except Exception:
+            pass
+        embed.add_field(name="Leaderboard Rank", value=rank_text, inline=False)
         if user_wallets:
             verified_set = set()
             cursor_v = self.db.verified_wallets.find({"_id": {"$in": user_wallets}})
@@ -936,6 +1089,8 @@ class ConfirmSnapshotModal(discord.ui.Modal):
             job = await self.cog.db.jobs.find_one({"_id": job_id})
             if job and job.get("status") == "completed":
                 await msg.edit(embed=success_embed("Snapshot Completed", f"Processed {job.get('progress', 0)} wallets."))
+                # Kick off bunker role updates and notifications (runs in background)
+                asyncio.create_task(self.cog.update_bunker_roles_and_notify())
             elif job and job.get("status") == "failed":
                 await msg.edit(embed=error_embed("Snapshot Failed", job.get("error", "Unknown error")))
 
