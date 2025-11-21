@@ -93,7 +93,7 @@ class METASKSBot(commands.Bot):
                 admin_cog = self.get_cog("AdminCog")
                 if admin_cog is None:
                     # if not yet loaded, wait and retry next cycle
-                    logging.warning("AdminCog not available; skipping autosnapshot cycle")
+                    logging.warning("AdminCogs not available; skipping autosnapshot cycle")
                 else:
                     # Announce and fetch holders
                     if status_channel is not None:
