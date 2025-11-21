@@ -42,15 +42,33 @@ class SnapshotService:
         headers = {}
         if self._cfg.me_api_key:
             headers["Authorization"] = f"Bearer {self._cfg.me_api_key}"
-        while True:
-            async with self._session.get(url, timeout=30, headers=headers) as resp:
-                if resp.status == 200:
-                    nfts = await resp.json()
-                    return [n for n in nfts if n.get("collection") == "marketelites"]
-                if resp.status in (500, 503):
-                    await asyncio.sleep(3)
-                    continue
-                return []
+        attempts = 0
+        backoff = max(1.0, float(self._cfg.me_request_interval))
+        while attempts < 5:
+            try:
+                async with self._session.get(url, timeout=30, headers=headers) as resp:
+                    if resp.status == 200:
+                        nfts = await resp.json()
+                        return [n for n in nfts if n.get("collection") == "marketelites"]
+                    if resp.status == 429:
+                        retry_after = float(resp.headers.get("Retry-After", "0") or "0")
+                        sleep_for = retry_after if retry_after > 0 else min(60.0, backoff * 2)
+                        await asyncio.sleep(sleep_for)
+                        backoff = min(60.0, sleep_for)
+                        attempts += 1
+                        continue
+                    if resp.status in (500, 503):
+                        await asyncio.sleep(backoff)
+                        attempts += 1
+                        backoff = min(60.0, backoff * 2)
+                        continue
+                    return []
+            except Exception as exc:
+                print(f"[fetch_nfts_by_wallet] error for {wallet_address}: {exc}; retrying...")
+                await asyncio.sleep(backoff)
+                attempts += 1
+                backoff = min(60.0, backoff * 2)
+        return []
 
     async def fetch_collection_holders(self) -> List[str]:
         """Fetch all unique holder wallet addresses for the configured collection.
@@ -80,27 +98,31 @@ class SnapshotService:
                         "displayOptions": {"showFungible": False},
                     },
                 }
-                async with self._session.post(endpoint, json=payload, timeout=60) as resp:
-                    if resp.status != 200:
-                        body = await resp.text()
-                        print(f"[holders] Helius status={resp.status} body={body[:200]}")
-                        break
-                    data = await resp.json()
-                    items = (data or {}).get("result", {}).get("items", [])
-                    print(f"[holders] Helius page={page} items={len(items)}")
-                    if not items:
-                        break
-                    for it in items:
-                        # Helius format: current owner is in ownership.owner
-                        owner = (
-                            (it.get("ownership") or {}).get("owner")
-                            or it.get("owner")
-                            or (it.get("token_info") or {}).get("owner")
-                            or (it.get("authorities") or [{}])[0].get("address")
-                        )
-                        if owner:
-                            holders.add(str(owner))
-                    page += 1
+                try:
+                    async with self._session.post(endpoint, json=payload, timeout=60) as resp:
+                        if resp.status != 200:
+                            body = await resp.text()
+                            print(f"[holders] Helius status={resp.status} body={body[:200]}")
+                            break
+                        data = await resp.json()
+                        items = (data or {}).get("result", {}).get("items", [])
+                        print(f"[holders] Helius page={page} items={len(items)}")
+                        if not items:
+                            break
+                        for it in items:
+                            # Helius format: current owner is in ownership.owner
+                            owner = (
+                                (it.get("ownership") or {}).get("owner")
+                                or it.get("owner")
+                                or (it.get("token_info") or {}).get("owner")
+                                or (it.get("authorities") or [{}])[0].get("address")
+                            )
+                            if owner:
+                                holders.add(str(owner))
+                        page += 1
+                except Exception as exc:
+                    print(f"[holders] Helius request error: {exc}; breaking to fallback")
+                    break
                 await asyncio.sleep(self._cfg.me_request_interval)
             print(f"[holders] Helius holders={len(holders)}")
             if holders:
@@ -121,19 +143,25 @@ class SnapshotService:
         while True:
             url = f"{base}/collections/{symbol}/tokens?offset={page*page_size}&limit={page_size}"
             print(f"[holders] GET {url}")
-            async with self._session.get(url, timeout=30, headers=headers) as resp:
-                if resp.status == 429:
-                    retry_after = float(resp.headers.get("Retry-After", "0"))
-                    sleep_for = retry_after if retry_after > 0 else min(60.0, backoff * 2)
-                    backoff = min(60.0, sleep_for)
-                    print(f"[holders] tokens 429; sleeping {sleep_for:.1f}s")
-                    await asyncio.sleep(sleep_for)
-                    continue
-                if resp.status != 200:
-                    txt = await resp.text()
-                    print(f"[holders] tokens page={page} status={resp.status} body={txt[:200]}")
-                    break
-                tokens = await resp.json()
+            try:
+                async with self._session.get(url, timeout=30, headers=headers) as resp:
+                    if resp.status == 429:
+                        retry_after = float(resp.headers.get("Retry-After", "0"))
+                        sleep_for = retry_after if retry_after > 0 else min(60.0, backoff * 2)
+                        backoff = min(60.0, sleep_for)
+                        print(f"[holders] tokens 429; sleeping {sleep_for:.1f}s")
+                        await asyncio.sleep(sleep_for)
+                        continue
+                    if resp.status != 200:
+                        txt = await resp.text()
+                        print(f"[holders] tokens page={page} status={resp.status} body={txt[:200]}")
+                        break
+                    tokens = await resp.json()
+            except Exception as exc:
+                print(f"[holders] tokens request error: {exc}; retrying after {backoff:.1f}s")
+                await asyncio.sleep(backoff)
+                backoff = min(60.0, backoff * 2)
+                continue
                 print(f"[holders] tokens page={page} count={len(tokens) if isinstance(tokens, list) else 'n/a'}")
                 if not tokens or not isinstance(tokens, list):
                     break
@@ -143,6 +171,7 @@ class SnapshotService:
                         continue
                     # fetch owners for this token
                     own_url = f"{base}/tokens/{mint}/owners"
+                try:
                     async with self._session.get(own_url, timeout=30, headers=headers) as own_resp:
                         if own_resp.status == 429:
                             sleep_for = min(60.0, backoff * 2)
@@ -168,6 +197,9 @@ class SnapshotService:
                         else:
                             body = await own_resp.text()
                             print(f"[holders] owners status={own_resp.status} body={body[:200]}")
+                except Exception as exc:
+                    print(f"[holders] owners request error for {mint}: {exc}; continuing")
+                    continue
                     # throttle between owner calls
                     await asyncio.sleep(backoff)
                 page += 1
