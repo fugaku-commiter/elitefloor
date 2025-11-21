@@ -112,7 +112,7 @@ class METASKSBot(commands.Bot):
                             except Exception:
                                 pass
                     except Exception as exc:  # noqa: BLE001
-                        logging.exception("Auto fetch holders failed: %s", exc)
+                        logging.exception("Autos fetch holders failed: %s", exc)
 
                     # Start snapshot with progress
                     progress_msg = None
