@@ -16,6 +16,7 @@ from discord.ext import commands
 from urllib.parse import urlparse, parse_qs
 
 from ..config import load_config
+import logging
 from ..db import Database
 from ..services.snapshot import SnapshotService
 from ..utils.embeds import error_embed, info_embed, progress_embed, success_embed
@@ -83,7 +84,7 @@ class AdminCog(commands.Cog):
         results.sort(key=lambda x: -x[1])
         return results
 
-    async def update_bunker_roles_and_notify(self) -> None:
+    async def update_bunker_roles_and_notify(self) -> dict:
         # Resolve channel and guild
         channel = self.bot.get_channel(BUNKER_CHANNEL_ID)
         if channel is None:
@@ -92,35 +93,43 @@ class AdminCog(commands.Cog):
             except Exception:
                 channel = None  # type: ignore[assignment]
         if channel is None or not isinstance(channel, (discord.TextChannel, discord.Thread)):
-            return
+            logging.warning("[bunker] Could not resolve bunker channel id=%s", BUNKER_CHANNEL_ID)
+            return {"ok": False, "reason": "channel_not_found"}
         guild = channel.guild
         role = guild.get_role(BUNKER_ROLE_ID)
         if role is None:
-            return
+            logging.warning("[bunker] Could not resolve bunker role id=%s in guild=%s", BUNKER_ROLE_ID, guild.id)
+            return {"ok": False, "reason": "role_not_found", "guild_id": guild.id}
 
         # Compute totals and threshold (rank 100 amount)
         totals = await self._compute_user_totals()
+        logging.info("[bunker] totals_count=%s", len(totals))
         if not totals:
             # No data -> remove role from all current holders
             to_remove_members = list(role.members)
+            logging.info("[bunker] No totals found; removing role from %s members", len(to_remove_members))
             for m in to_remove_members:
                 try:
                     await m.remove_roles(role, reason="Snapshot cleared; no eligible users")
                 except Exception:
                     pass
-            return
+            return {"ok": True, "threshold": None, "added": 0, "removed": len(to_remove_members), "eligible": 0}
         threshold_index = min(99, len(totals) - 1)
         threshold = totals[threshold_index][1]
+        logging.info("[bunker] threshold_index=%s threshold=%.4f", threshold_index, float(threshold))
 
         eligible_ids: set[int] = {uid for uid, total in totals if total >= threshold}
         current_ids: set[int] = {m.id for m in role.members}
-        to_add_ids = eligible_ids - current_ids
         to_remove_ids = current_ids - eligible_ids
+        logging.info("[bunker] eligible=%s current=%s to_remove=%s",
+                     len(eligible_ids), len(current_ids), len(to_remove_ids))
 
         notifications: list[tuple[discord.Member, bool]] = []  # (member, entering)
+        added_count = 0
+        removed_count = 0
 
-        # Apply additions
-        for uid in to_add_ids:
+        # Apply additions by iterating eligible set and skipping members already holding the role
+        for uid in eligible_ids:
             member = guild.get_member(uid)
             if member is None:
                 try:
@@ -129,12 +138,17 @@ class AdminCog(commands.Cog):
                     member = None  # type: ignore[assignment]
             if member is None:
                 continue
+            if role in member.roles:
+                continue  # already has role; do not reassign or notify
             try:
                 await member.add_roles(role, reason="Top allocation threshold met")
                 notifications.append((member, True))
+                added_count += 1
             except discord.Forbidden:
+                logging.warning("[bunker] Forbidden adding role to member=%s", uid)
                 continue
             except Exception:
+                logging.exception("[bunker] Error adding role to member=%s", uid)
                 continue
 
         # Apply removals
@@ -147,12 +161,17 @@ class AdminCog(commands.Cog):
                     member = None  # type: ignore[assignment]
             if member is None:
                 continue
+            if role not in member.roles:
+                continue
             try:
                 await member.remove_roles(role, reason="Dropped below allocation threshold")
                 notifications.append((member, False))
+                removed_count += 1
             except discord.Forbidden:
+                logging.warning("[bunker] Forbidden removing role from member=%s", uid)
                 continue
             except Exception:
+                logging.exception("[bunker] Error removing role from member=%s", uid)
                 continue
 
         # Send notifications at most one per minute
@@ -170,10 +189,21 @@ class AdminCog(commands.Cog):
                     pass
                 await channel.send(content=f"<@{member.id}>", embed=embed)
             except Exception:
-                pass
+                logging.exception("[bunker] Error sending bunker notification for member=%s", member.id)
             # Rate limit: one message per minute
             if idx < len(notifications) - 1:
                 await asyncio.sleep(60)
+
+        logging.info("[bunker] done threshold=%.4f added=%s removed=%s notify=%s",
+                     float(threshold), added_count, removed_count, len(notifications))
+        return {
+            "ok": True,
+            "threshold": float(threshold),
+            "added": added_count,
+            "removed": removed_count,
+            "eligible": len(eligible_ids),
+            "notified": len(notifications),
+        }
 
     @staticmethod
     def _normalize_csv_url(url: str) -> str:
