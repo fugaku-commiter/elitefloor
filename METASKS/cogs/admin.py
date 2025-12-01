@@ -181,7 +181,7 @@ class AdminCog(commands.Cog):
                 if entering:
                     desc = f"{member.display_name} has entered the bunker."
                 else:
-                    desc = f"{member.display_name} has left the bunker."
+                    desc = f"{member.display_name} has been exiled from the bunker."
                 embed = discord.Embed(title=title, description=desc, color=discord.Color.gold())
                 try:
                     embed.set_image(url=member.display_avatar.url)
