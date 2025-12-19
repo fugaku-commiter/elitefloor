@@ -45,8 +45,9 @@ class METASKSBot(commands.Bot):
     async def on_ready(self) -> None:
         logging.info("Logged in as %s (%s)", self.user, self.user.id if self.user else "?")
         try:
-            synced = await self.tree.sync()
-            logging.info("Synced %d app commands", len(synced))
+            guild_obj = discord.Object(id=1169054273254985830)
+            synced = await self.tree.sync(guild=guild_obj)
+            logging.info("Synced %d app commands to guild %s", len(synced), guild_obj.id)
         except Exception as exc:  # noqa: BLE001
             logging.exception("Failed to sync app commands: %s", exc)
         # Start background auto snapshot task once
@@ -93,7 +94,7 @@ class METASKSBot(commands.Bot):
                 admin_cog = self.get_cog("AdminCog")
                 if admin_cog is None:
                     # if not yet loaded, wait and retry next cycle
-                    logging.warning("AdminCogs not available; skipping autosnapshot cycle")
+                    logging.warning("AdminCog not available; skipping autosnapshot cycle")
                 else:
                     # Announce and fetch holders
                     if status_channel is not None:
@@ -112,7 +113,7 @@ class METASKSBot(commands.Bot):
                             except Exception:
                                 pass
                     except Exception as exc:  # noqa: BLE001
-                        logging.exception("Autos fetch holders failed: %s", exc)
+                        logging.exception("Auto fetch holders failed: %s", exc)
 
                     # Start snapshot with progress
                     progress_msg = None
@@ -140,7 +141,18 @@ class METASKSBot(commands.Bot):
                                 pass
                         # Update bunker roles and notify (runs inline here; it rate-limits messages)
                         try:
-                            await admin_cog.update_bunker_roles_and_notify()
+                            result = await admin_cog.update_bunker_roles_and_notify()
+                            if status_channel is not None and isinstance(result, dict):
+                                try:
+                                    th = result.get("threshold")
+                                    add_c = result.get("added")
+                                    rem_c = result.get("removed")
+                                    elig = result.get("eligible")
+                                    ok = result.get("ok")
+                                    desc = f"ok={ok}\nthreshold={th}\neligible={elig}\nadded={add_c}\nremoved={rem_c}"
+                                    await status_channel.send(embed=info_embed("Bunker Update Summary", desc))
+                                except Exception:
+                                    pass
                         except Exception as exc:  # noqa: BLE001
                             logging.exception("Bunker role update failed: %s", exc)
                     except Exception as exc:  # noqa: BLE001
