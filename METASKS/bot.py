@@ -45,11 +45,10 @@ class METASKSBot(commands.Bot):
     async def on_ready(self) -> None:
         logging.info("Logged in as %s (%s)", self.user, self.user.id if self.user else "?")
         try:
-            guild_obj = discord.Object(id=1169054273254985830)
-            synced = await self.tree.sync(guild=guild_obj)
-            logging.info("Synced %d app commands to guild %s", len(synced), guild_obj.id)
-        except Exception as exc:  # noqa: BLE001
-            logging.exception("Failed to sync app commands: %s", exc)
+            synced = await self.tree.sync()
+            logging.info("Synced %d slash commands", len(synced))
+        except Exception as exc:
+            logging.exception("Failed to sync commands: %s", exc)
         # Start background auto snapshot task once
         if not self._auto_task_started:
             self.loop.create_task(self._auto_snapshot_loop())
