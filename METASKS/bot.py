@@ -21,6 +21,7 @@ class METASKSBot(commands.Bot):
         self.cfg = load_config()
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.members = True
         super().__init__(command_prefix=self.cfg.command_prefix, intents=intents)
         # attach db after super init
         self.db = Database(self.cfg.mongo_uri, self.cfg.mongo_db)
@@ -41,6 +42,26 @@ class METASKSBot(commands.Bot):
             self.add_view(PanelView(self.db))
         except Exception:
             pass
+
+    async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
+        source_role_id = 1223196238279737344
+        mirror_role_id = 1206734940532772874
+        before_ids = {r.id for r in before.roles}
+        after_ids = {r.id for r in after.roles}
+        if source_role_id not in before_ids and source_role_id in after_ids:
+            mirror_role = after.guild.get_role(mirror_role_id)
+            if mirror_role and mirror_role_id not in after_ids:
+                try:
+                    await after.add_roles(mirror_role, reason="Mirror role sync")
+                except Exception:
+                    logging.exception("Failed to add mirror role to %s", after)
+        elif source_role_id in before_ids and source_role_id not in after_ids:
+            mirror_role = after.guild.get_role(mirror_role_id)
+            if mirror_role and mirror_role_id in after_ids:
+                try:
+                    await after.remove_roles(mirror_role, reason="Mirror role sync")
+                except Exception:
+                    logging.exception("Failed to remove mirror role from %s", after)
 
     async def on_ready(self) -> None:
         logging.info("Logged in as %s (%s)", self.user, self.user.id if self.user else "?")
